@@ -1,67 +1,50 @@
 # Agentic AI SPIFFE Demo
 
-A working demo of cryptographic identity for AI agents using Vault and Consul.
+This repo exists to make one thing visible: how workload identity and authorization actually behave when AI services talk to each other.
 
-## What this demo shows
+Instead of API keys or network trust, services authenticate with SPIFFE identities and communicate over mutual TLS. Authorization is enforced by Consul intentions, not application code.
 
-- Vault issuing SPIFFE certificates via PKI engine
-- Consul using Vault as its Certificate Authority
-- mTLS enforced by Envoy sidecars between all services
-- Intentions controlling which agents can talk to which
-- Traffic flow: planner-agent → executor-agent → ollama
+## The agents
 
-For details on how each component works, see [docs/architecture.md](docs/architecture.md).
+The planner and executor are intentionally simple. They are not AI frameworks and they are not wrappers around Ollama.
 
-## Requirements
-
-- Docker and Docker Compose
-- [Task](https://taskfile.dev) (Taskfile runner)
+They exist to create clear identity boundaries. The planner accepts user input but cannot reach the LLM. The executor can reach the LLM but cannot talk to users. This separation makes it obvious which identity is allowed to do what.
 
 ## Running the demo
 
-Start all services:
+You need Docker and [Task](https://taskfile.dev).
 
 ```bash
 task up
 ```
 
-This starts Vault, Consul, Ollama, and both agents. It also pulls the Ollama model.
+## The demo flow
 
-Run the guided demo:
+The demo is designed to be interactive. You start with a running system that cannot communicate. You then add intentions and watch traffic start flowing. When you remove an intention, traffic stops immediately.
 
 ```bash
 task demo
 ```
 
-The demo walks through SPIFFE certificates, mTLS, and intentions step by step. It pauses between steps so you can inspect the state in Consul UI. These pauses are intentional for live demos.
+Open Consul UI at http://localhost:8500 while the demo runs. Watch the intentions appear and disappear. Watch service health change.
 
-## Main tasks
+After the guided demo, try `task chat` for interactive use.
 
-| Task | Description |
-|------|-------------|
-| `task up` | Start all services |
-| `task down` | Stop all services |
-| `task demo` | Guided walkthrough with pauses |
-| `task chat` | Interactive chat with the AI |
-| `task intentions:create` | Allow traffic between agents |
-| `task intentions:delete` | Block traffic (default deny) |
-| `task test:deny` | Test that traffic is blocked |
-| `task test:allow` | Test that traffic is allowed |
-| `task status` | Show service status |
-| `task --list` | Show all available tasks |
+| Task | What it does |
+|------|--------------|
+| `task up` | Start everything |
+| `task down` | Stop everything |
+| `task demo` | Guided walkthrough |
+| `task chat` | Interactive chat |
 
-## Access URLs
+## URLs
 
-| Service | URL | Notes |
-|---------|-----|-------|
-| Vault | http://localhost:8200 | Token: `root` |
-| Consul | http://localhost:8500 | |
-| Planner | http://localhost:8080 | Entry point for questions |
+- Vault: http://localhost:8200 (token: `root`)
+- Consul: http://localhost:8500
+- Planner: http://localhost:8080
 
-## What this demo is NOT
+## Going deeper
 
-- Not production-ready (dev mode, no HA, no persistent storage)
-- Not covering GPU acceleration or scaling
-- Not teaching LLM prompting or agent design
+See [docs/architecture.md](docs/architecture.md) for how Vault, Consul, and the sidecars fit together.
 
-The agents are simple Flask apps. They exist to show identity and authorization, not AI capabilities.
+This demo uses Docker Compose so it runs anywhere Docker runs. The `nomad/` and `scripts/` directories contain a more realistic setup using Nomad and Linux networking. The architecture is the same. The tooling is heavier.
