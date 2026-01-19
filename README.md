@@ -36,6 +36,9 @@ After the guided demo, try `task chat` for interactive use.
 | `task down` | Stop everything |
 | `task demo` | Guided walkthrough |
 | `task chat` | Interactive chat |
+| `task allow` | Create intentions |
+| `task deny` | Delete intentions |
+| `task logs` | Follow all logs |
 
 ## URLs
 

@@ -1,46 +1,25 @@
 version: '3'
 
-# Agentic AI SPIFFE Demo - Taskfile
-# Run: task --list
-
 vars:
   OLLAMA_MODEL: qwen2.5:0.5b
 
 tasks:
-  # ==========================================================================
-  # Main Commands
-  # ==========================================================================
-
-  default:
-    desc: Show available tasks
-    cmds:
-      - task --list
-
   up:
     desc: Start all services
     cmds:
       - docker compose up -d --build
       - echo ""
-      - echo "Waiting for bootstrap to complete..."
+      - echo "Waiting for bootstrap..."
       - docker compose logs -f bootstrap 2>/dev/null || true
       - echo ""
-      - task: status
+      - echo "Pulling model..."
+      - docker exec ollama ollama pull {{.OLLAMA_MODEL}}
       - echo ""
-      - echo "Pulling Ollama model (this may take a moment)..."
-      - task: model:pull
+      - echo "Ready."
+      - echo "  Vault:  http://localhost:8200 (token: root)"
+      - echo "  Consul: http://localhost:8500"
       - echo ""
-      - 'echo "=== URLs ==="'
-      - 'echo "Vault UI:   http://localhost:8200 (token: root)"'
-      - 'echo "Consul UI:  http://localhost:8500"'
-      - 'echo "Planner:    http://localhost:8080"'
-      - 'echo ""'
-      - 'echo "Ready! Next steps:"'
-      - 'echo "  1. Test default deny:       task test:deny"'
-      - 'echo "  2. Create intentions:       task intentions:create"'
-      - 'echo "  3. Test with intentions:    task test:allow"'
-      - 'echo "  4. Ask a question:          task ask"'
-      - 'echo "  5. Interactive chat:        task chat"'
-      - 'echo "  6. Run full demo:           task demo"'
+      - echo "Run: task demo"
 
   down:
     desc: Stop all services
@@ -51,438 +30,133 @@ tasks:
     desc: Stop services and remove volumes
     cmds:
       - docker compose down -v
-      - echo "All services stopped and volumes removed"
 
-  restart:
-    desc: Restart all services
+  demo:
+    desc: Guided walkthrough of intentions and mTLS
     cmds:
-      - task: down
-      - task: up
-
-  status:
-    desc: Show status of all services
-    cmds:
-      - echo "=== Docker Containers ==="
-      - docker compose ps
-      - echo ""
-      - echo "=== Consul Services ==="
-      - docker exec consul consul catalog services 2>/dev/null || echo "Consul not ready"
-
-  # ==========================================================================
-  # Model Management
-  # ==========================================================================
-
-  model:pull:
-    desc: Pull the Ollama model
-    cmds:
-      - echo "Pulling {{.OLLAMA_MODEL}}..."
-      - docker exec ollama ollama pull {{.OLLAMA_MODEL}}
-      - echo "Model ready"
-
-  model:list:
-    desc: List available models
-    cmds:
-      - docker exec ollama ollama list
-
-  # ==========================================================================
-  # Intentions
-  # ==========================================================================
-
-  intentions:create:
-    desc: Create all intentions (allow traffic)
-    cmds:
-      - echo "Creating intentions..."
-      - docker exec consul consul intention create planner-agent executor-agent 2>/dev/null || docker exec consul consul intention create -replace planner-agent executor-agent 2>/dev/null || echo "planner-agent => executor-agent exists"
-      - docker exec consul consul intention create executor-agent ollama 2>/dev/null || docker exec consul consul intention create -replace executor-agent ollama 2>/dev/null || echo "executor-agent => ollama exists"
-      - echo ""
-      - task: intentions:list
-
-  intentions:delete:
-    desc: Delete all intentions (block traffic)
-    cmds:
-      - echo "Deleting intentions..."
-      - docker exec consul consul intention delete planner-agent executor-agent 2>/dev/null || true
-      - docker exec consul consul intention delete executor-agent ollama 2>/dev/null || true
-      - echo "Intentions deleted - traffic will be blocked"
-
-  intentions:list:
-    desc: List all intentions
-    cmds:
-      - echo "=== Consul Intentions ==="
-      - docker exec consul consul intention list
-
-  # ==========================================================================
-  # Testing
-  # ==========================================================================
-
-  test:deny:
-    desc: Test that traffic is denied (no intentions)
-    cmds:
-      - echo "Testing without intentions (should fail with 503)..."
-      - echo ""
-      - |
-        http_code=$(curl -s -o /tmp/response.json -w "%{http_code}" http://localhost:8080/ask \
-          -H "Content-Type: application/json" \
-          -d '{"question": "test"}')
-        body=$(cat /tmp/response.json)
-        echo "HTTP Status: $http_code"
-        echo "Response: $body"
-        if [ "$http_code" = "503" ]; then
-          echo ""
-          echo "SUCCESS: Request denied as expected (no intentions)"
-        else
-          echo ""
-          echo "NOTE: Expected 503, got $http_code"
-        fi
-
-  test:allow:
-    desc: Test that traffic is allowed (with intentions)
-    cmds:
-      - echo "Testing with intentions (should succeed)..."
-      - echo ""
-      - |
-        response=$(curl -s http://localhost:8080/ask \
-          -H "Content-Type: application/json" \
-          -d '{"question": "What is SPIFFE? Answer in one sentence."}')
-        echo "Response:"
-        echo "$response" | jq -r '.answer' 2>/dev/null || echo "$response"
-
-  ask:
-    desc: 'Ask a custom question (usage: task ask -- "your question")'
-    cmds:
-      - |
-        if [ -z "{{.CLI_ARGS}}" ]; then
-          echo "Usage: task ask -- \"your question here\""
-          echo ""
-          echo "Example: task ask -- \"What is mutual TLS?\""
-          exit 1
-        fi
-        echo "Question: {{.CLI_ARGS}}"
-        echo ""
-        response=$(curl -s http://localhost:8080/ask \
-          -H "Content-Type: application/json" \
-          -d "{\"question\": \"{{.CLI_ARGS}}\"}")
-        answer=$(echo "$response" | jq -r '.answer' 2>/dev/null)
-        if [ "$answer" = "null" ] || [ -z "$answer" ]; then
-          echo "Error: $response"
-        else
-          echo "Answer:"
-          echo "$answer"
-        fi
-
-  test:health:
-    desc: Check health of all services
-    cmds:
-      - 'echo "=== Service Health ==="'
-      - 'echo -n "Vault:    " && curl -s http://localhost:8200/v1/sys/health | jq -r ".initialized" 2>/dev/null && echo " (initialized)" || echo "NOT READY"'
-      - 'echo -n "Consul:   " && curl -s http://localhost:8500/v1/status/leader | jq -r "." 2>/dev/null || echo "NOT READY"'
-      - 'echo -n "Planner:  " && curl -s http://localhost:8080/health | jq -r ".status" 2>/dev/null || echo "NOT READY"'
-      - 'echo -n "Executor: " && docker exec executor curl -s http://localhost:8081/health 2>/dev/null | jq -r ".status" || echo "NOT READY"'
-      - 'echo -n "Ollama:   " && docker exec ollama ollama list >/dev/null 2>&1 && echo "healthy" || echo "NOT READY"'
-
-  test:full:
-    desc: Run full demo test sequence
-    cmds:
-      - task: test:health
-      - 'echo ""'
-      - 'echo "=== Test 1: Default Deny ==="'
-      - task: intentions:delete
-      - sleep 2
-      - task: test:deny
-      - 'echo ""'
-      - 'echo "=== Test 2: Allow with Intentions ==="'
-      - task: intentions:create
-      - sleep 2
-      - task: test:allow
-      - 'echo ""'
-      - 'echo "=== Test 3: Remove and Deny Again ==="'
-      - docker exec consul consul intention delete planner-agent executor-agent
-      - sleep 2
-      - task: test:deny
-      - 'echo ""'
-      - 'echo "=== Restoring Intentions ==="'
-      - task: intentions:create
-
-  # ==========================================================================
-  # Interactive Chat
-  # ==========================================================================
+      - task: _demo_intro
+      - task: _demo_deny
+      - task: _demo_allow
+      - task: _demo_break
+      - task: _demo_end
 
   chat:
-    desc: Interactive chat with the AI
+    desc: Interactive chat
     cmds:
       - python3 scripts/chat.py
 
-  # ==========================================================================
-  # PKI / Certificate Inspection
-  # ==========================================================================
-
-  pki:root:
-    desc: Show Vault root CA certificate
+  allow:
+    desc: Create intentions (allow traffic)
     cmds:
-      - echo "=== Vault Root CA ==="
-      - |
-        docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-          vault read -field=certificate pki/cert/ca | openssl x509 -text -noout | head -20
+      - docker exec consul consul intention create planner-agent executor-agent 2>/dev/null || docker exec consul consul intention create -replace planner-agent executor-agent
+      - docker exec consul consul intention create executor-agent ollama 2>/dev/null || docker exec consul consul intention create -replace executor-agent ollama
+      - echo "Intentions created"
+      - docker exec consul consul intention list
 
-  pki:intermediate:
-    desc: Show Vault intermediate CA certificate
+  deny:
+    desc: Delete intentions (block traffic)
     cmds:
-      - echo "=== Vault Intermediate CA ==="
-      - |
-        docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-          vault read -field=certificate pki_int/cert/ca | openssl x509 -text -noout | head -25
-
-  pki:consul-ca:
-    desc: Show Consul Connect CA (should be from Vault)
-    cmds:
-      - echo "=== Consul Connect CA ==="
-      - curl -s http://localhost:8500/v1/connect/ca/roots | jq -r '.Roots[0].RootCert' | openssl x509 -text -noout | head -20
-
-  pki:consul-config:
-    desc: Show Consul CA configuration
-    cmds:
-      - echo "=== Consul CA Configuration ==="
-      - curl -s http://localhost:8500/v1/connect/ca/configuration | jq .
-
-  pki:leaf-cert:
-    desc: Show a service leaf certificate (SPIFFE ID)
-    cmds:
-      - echo "=== Planner Agent Leaf Certificate ==="
-      - echo "Fetching certificate from Envoy admin..."
-      - |
-        docker exec planner curl -s http://localhost:19002/certs 2>/dev/null | jq -r '.certificates[0].cert_chain[0].subject_alt_names[0].uri' || echo "Sidecar not ready"
-      - echo ""
-      - echo "This is the SPIFFE ID assigned to planner-agent"
-
-  pki:vault-leases:
-    desc: Show active Vault PKI leases (cert requests from Consul)
-    cmds:
-      - echo "=== Vault PKI Leases ==="
-      - |
-        docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-          vault list sys/leases/lookup/pki_int/issue/consul-connect 2>/dev/null || echo "No active leases"
-
-  # ==========================================================================
-  # Logs
-  # ==========================================================================
+      - docker exec consul consul intention delete planner-agent executor-agent 2>/dev/null || true
+      - docker exec consul consul intention delete executor-agent ollama 2>/dev/null || true
+      - echo "Intentions deleted"
 
   logs:
-    desc: Show logs from all services
+    desc: Follow all logs
     cmds:
       - docker compose logs -f
 
-  logs:vault:
-    desc: Show Vault logs
-    cmds:
-      - docker compose logs -f vault
+  # === Internal tasks (no desc = hidden from task --list) ===
 
-  logs:consul:
-    desc: Show Consul logs
-    cmds:
-      - docker compose logs -f consul
-
-  logs:planner:
-    desc: Show planner agent logs
-    cmds:
-      - docker compose logs -f planner
-
-  logs:executor:
-    desc: Show executor agent logs
-    cmds:
-      - docker compose logs -f executor
-
-  logs:ollama:
-    desc: Show Ollama logs
-    cmds:
-      - docker compose logs -f ollama
-
-  logs:sidecars:
-    desc: Show all sidecar logs
-    cmds:
-      - docker compose logs -f planner-sidecar executor-sidecar ollama-sidecar
-
-  # ==========================================================================
-  # Debug
-  # ==========================================================================
-
-  debug:consul-services:
-    desc: Show detailed Consul service info
-    cmds:
-      - echo "=== Registered Services ==="
-      - curl -s http://localhost:8500/v1/agent/services | jq 'keys'
-      - echo ""
-      - echo "=== Planner Agent ==="
-      - curl -s http://localhost:8500/v1/agent/service/planner-agent | jq .
-      - echo ""
-      - echo "=== Executor Agent ==="
-      - curl -s http://localhost:8500/v1/agent/service/executor-agent | jq .
-
-  debug:envoy-clusters:
-    desc: Show Envoy cluster status (upstream connections)
-    cmds:
-      - echo "=== Planner Sidecar Clusters ==="
-      - docker exec planner curl -s http://localhost:19002/clusters 2>/dev/null | grep -E "^[a-z]" | head -20 || echo "Sidecar not ready"
-
-  debug:envoy-stats:
-    desc: Show Envoy connection stats
-    cmds:
-      - echo "=== Planner Sidecar Stats ==="
-      - docker exec planner curl -s http://localhost:19002/stats 2>/dev/null | grep -E "upstream_cx|downstream_cx" | head -20 || echo "Sidecar not ready"
-
-  # ==========================================================================
-  # Demo Flow (step by step)
-  # ==========================================================================
-
-  demo:
-    desc: Run the full demo interactively
+  _demo_intro:
     cmds:
       - |
         echo ""
-        echo "╔════════════════════════════════════════════════════════════╗"
-        echo "║  Agentic AI SPIFFE Demo                                    ║"
-        echo "╚════════════════════════════════════════════════════════════╝"
+        echo "Agentic AI SPIFFE Demo"
+        echo "======================"
+        echo ""
+        echo "Open Consul UI: http://localhost:8500"
         echo ""
         echo "This demo shows:"
-        echo "  1. Vault issuing SPIFFE certificates"
-        echo "  2. Consul using Vault as CA"
-        echo "  3. mTLS between services via Envoy sidecars"
-        echo "  4. Intention-based authorization"
+        echo "  1. Default deny - no intentions, no traffic"
+        echo "  2. Create intentions - traffic flows"
+        echo "  3. Remove intention - traffic stops"
         echo ""
-        echo "URLs:"
-        echo "  Vault:  http://localhost:8200 (token: root)"
-        echo "  Consul: http://localhost:8500"
-        echo ""
-        read -p "Press Enter to continue..."
-        echo ""
-      - task: demo:step1
-      - task: demo:step2
-      - task: demo:step3
-      - task: demo:step4
-      - task: demo:step5
+        read -p "Press Enter to start..."
 
-  demo:step1:
-    desc: "Demo Step 1: Show PKI hierarchy"
+  _demo_deny:
     cmds:
       - |
         echo ""
-        echo "═══════════════════════════════════════════════════════════"
-        echo "STEP 1: PKI Hierarchy"
-        echo "═══════════════════════════════════════════════════════════"
-        echo ""
-        echo "Vault has a PKI hierarchy:"
-        echo "  Root CA (pki/) → Intermediate CA (pki_int/)"
-        echo ""
-        echo "Consul is configured to use Vault's intermediate CA"
-        echo "to issue SPIFFE certificates to services."
-        echo ""
-        read -p "Press Enter to see Consul CA config..."
-      - task: pki:consul-config
-      - |
-        echo ""
-        read -p "Press Enter to continue..."
-
-  demo:step2:
-    desc: "Demo Step 2: Show service identities"
-    cmds:
-      - |
-        echo ""
-        echo "═══════════════════════════════════════════════════════════"
-        echo "STEP 2: Service Identities (SPIFFE IDs)"
-        echo "═══════════════════════════════════════════════════════════"
-        echo ""
-        echo "Each service has a SPIFFE identity:"
-        echo "  spiffe://dc1.consul/ns/default/dc/dc1/svc/planner-agent"
-        echo "  spiffe://dc1.consul/ns/default/dc/dc1/svc/executor-agent"
-        echo "  spiffe://dc1.consul/ns/default/dc/dc1/svc/ollama"
-        echo ""
-        echo "These identities are embedded in X.509 certificates"
-        echo "issued by Vault through Consul."
-        echo ""
-        read -p "Press Enter to see registered services..."
-      - task: debug:consul-services
-      - |
-        echo ""
-        read -p "Press Enter to continue..."
-
-  demo:step3:
-    desc: "Demo Step 3: Test default deny"
-    cmds:
-      - |
-        echo ""
-        echo "═══════════════════════════════════════════════════════════"
-        echo "STEP 3: Default Deny (No Intentions)"
-        echo "═══════════════════════════════════════════════════════════"
-        echo ""
-        echo "Without intentions, services cannot communicate."
-        echo "The Envoy sidecars enforce mTLS and check intentions."
-        echo ""
-        read -p "Press Enter to delete intentions and test..."
-      - task: intentions:delete
-      - sleep 2
-      - task: test:deny
-      - |
-        echo ""
-        read -p "Press Enter to continue..."
-
-  demo:step4:
-    desc: "Demo Step 4: Create intentions and allow traffic"
-    cmds:
-      - |
-        echo ""
-        echo "═══════════════════════════════════════════════════════════"
-        echo "STEP 4: Allow Traffic with Intentions"
-        echo "═══════════════════════════════════════════════════════════"
-        echo ""
-        echo "Intentions define which identities can talk to which."
-        echo "We need:"
-        echo "  planner-agent → executor-agent"
-        echo "  executor-agent → ollama"
-        echo ""
-        read -p "Press Enter to create intentions..."
-      - task: intentions:create
+        echo "Step 1: Default Deny"
+        echo "--------------------"
+        echo "Deleting all intentions..."
+      - task: deny
       - sleep 2
       - |
         echo ""
-        read -p "Press Enter to test with intentions..."
-      - task: test:allow
+        echo "Testing request (should fail)..."
+        echo ""
+      - task: _test
       - |
         echo ""
         read -p "Press Enter to continue..."
 
-  demo:step5:
-    desc: "Demo Step 5: Granular control"
+  _demo_allow:
     cmds:
       - |
         echo ""
-        echo "═══════════════════════════════════════════════════════════"
-        echo "STEP 5: Granular Control"
-        echo "═══════════════════════════════════════════════════════════"
+        echo "Step 2: Allow Traffic"
+        echo "---------------------"
+        echo "Creating intentions..."
+      - task: allow
+      - sleep 2
+      - |
         echo ""
-        echo "We can remove just the planner→executor intention"
-        echo "to block that specific path."
+        echo "Testing request (should work)..."
         echo ""
-        read -p "Press Enter to remove planner→executor intention..."
+      - task: _test
+      - |
+        echo ""
+        read -p "Press Enter to continue..."
+
+  _demo_break:
+    cmds:
+      - |
+        echo ""
+        echo "Step 3: Break One Link"
+        echo "----------------------"
+        echo "Removing planner → executor intention..."
       - docker exec consul consul intention delete planner-agent executor-agent
       - sleep 2
-      - task: test:deny
       - |
         echo ""
-        echo "Notice: executor→ollama intention still exists,"
-        echo "but planner can't reach executor."
+        echo "Testing request (should fail)..."
         echo ""
-        read -p "Press Enter to restore intentions..."
-      - task: intentions:create
+      - task: _test
       - |
         echo ""
-        echo "═══════════════════════════════════════════════════════════"
-        echo "Demo Complete!"
-        echo "═══════════════════════════════════════════════════════════"
+        read -p "Press Enter to continue..."
+
+  _demo_end:
+    cmds:
+      - task: allow
+      - |
         echo ""
-        echo "Key takeaways:"
-        echo "  - Vault issues SPIFFE certificates"
-        echo "  - Consul enforces mTLS and intentions"
-        echo "  - Services communicate through Envoy sidecars"
-        echo "  - Zero application code changes needed"
+        echo "Demo complete."
         echo ""
         echo "Try: task chat"
         echo ""
+
+  _test:
+    cmds:
+      - |
+        response=$(curl -s -w "\n%{http_code}" http://localhost:8080/ask \
+          -H "Content-Type: application/json" \
+          -d '{"question": "Say hello in 5 words or less"}')
+        body=$(echo "$response" | head -n -1)
+        code=$(echo "$response" | tail -n 1)
+        if [ "$code" = "200" ]; then
+          echo "OK: $(echo "$body" | jq -r '.answer' 2>/dev/null || echo "$body")"
+        else
+          echo "BLOCKED (HTTP $code)"
+        fi
