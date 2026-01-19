@@ -1,0 +1,16 @@
+# Envoy sidecar config for ollama
+# Minimal config - ollama is a downstream service that receives requests
+
+node:
+  id: ollama-sidecar
+  cluster: ollama
+
+admin:
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 19002
+
+static_resources:
+  clusters: []
+  listeners: []

@@ -1,0 +1,75 @@
+# Envoy sidecar config for planner-agent
+# Uses Consul as xDS control plane for service discovery and mTLS
+
+node:
+  id: planner-agent-sidecar
+  cluster: planner-agent
+
+admin:
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 19000
+
+dynamic_resources:
+  cds_config:
+    resource_api_version: V3
+    api_config_source:
+      api_type: GRPC
+      transport_api_version: V3
+      grpc_services:
+        - envoy_grpc:
+            cluster_name: consul_xds
+  lds_config:
+    resource_api_version: V3
+    api_config_source:
+      api_type: GRPC
+      transport_api_version: V3
+      grpc_services:
+        - envoy_grpc:
+            cluster_name: consul_xds
+
+static_resources:
+  clusters:
+    - name: consul_xds
+      type: STRICT_DNS
+      connect_timeout: 5s
+      http2_protocol_options: {}
+      load_assignment:
+        cluster_name: consul_xds
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: consul
+                      port_value: 8502
+
+    # Local upstream to executor-agent (for planner to call executor)
+    - name: local_executor
+      type: STATIC
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: local_executor
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: executor
+                      port_value: 8081
+
+  listeners:
+    # Upstream listener - planner connects here to reach executor
+    - name: executor_upstream
+      address:
+        socket_address:
+          address: 127.0.0.1
+          port_value: 9001
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: executor_upstream
+                cluster: local_executor

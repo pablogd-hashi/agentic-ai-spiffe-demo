@@ -1,0 +1,75 @@
+# Envoy sidecar config for executor-agent
+# Uses Consul as xDS control plane for service discovery and mTLS
+
+node:
+  id: executor-agent-sidecar
+  cluster: executor-agent
+
+admin:
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 19001
+
+dynamic_resources:
+  cds_config:
+    resource_api_version: V3
+    api_config_source:
+      api_type: GRPC
+      transport_api_version: V3
+      grpc_services:
+        - envoy_grpc:
+            cluster_name: consul_xds
+  lds_config:
+    resource_api_version: V3
+    api_config_source:
+      api_type: GRPC
+      transport_api_version: V3
+      grpc_services:
+        - envoy_grpc:
+            cluster_name: consul_xds
+
+static_resources:
+  clusters:
+    - name: consul_xds
+      type: STRICT_DNS
+      connect_timeout: 5s
+      http2_protocol_options: {}
+      load_assignment:
+        cluster_name: consul_xds
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: consul
+                      port_value: 8502
+
+    # Local upstream to ollama
+    - name: local_ollama
+      type: STATIC
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: local_ollama
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: ollama
+                      port_value: 11434
+
+  listeners:
+    # Upstream listener - executor connects here to reach ollama
+    - name: ollama_upstream
+      address:
+        socket_address:
+          address: 127.0.0.1
+          port_value: 9002
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: ollama_upstream
+                cluster: local_ollama

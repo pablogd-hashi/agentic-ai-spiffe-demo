@@ -1,0 +1,423 @@
+version: "3.8"
+
+# Agentic AI SPIFFE Demo
+#
+# Run with: task up
+# See all commands: task --list
+#
+# UIs:
+#   Vault:   http://localhost:8200 (token: root)
+#   Consul:  http://localhost:8500
+#   Planner: http://localhost:8080
+
+services:
+  # ==========================================================================
+  # Infrastructure: Vault (PKI CA)
+  # ==========================================================================
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: vault
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
+    ports:
+      - "8200:8200"
+    networks:
+      mesh:
+        ipv4_address: 10.10.0.10
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ==========================================================================
+  # Infrastructure: Consul (Service Mesh)
+  # ==========================================================================
+  consul:
+    image: hashicorp/consul:1.17
+    container_name: consul
+    command: >
+      agent -dev
+      -client=0.0.0.0
+      -bind=10.10.0.11
+      -hcl='connect { enabled = true }'
+      -hcl='ports { grpc = 8502 }'
+    ports:
+      - "8500:8500"
+      - "8502:8502"
+    networks:
+      mesh:
+        ipv4_address: 10.10.0.11
+    depends_on:
+      vault:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ==========================================================================
+  # Bootstrap: Configure Vault PKI and Consul CA
+  # ==========================================================================
+  bootstrap:
+    image: curlimages/curl:latest
+    container_name: bootstrap
+    user: root
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        apk add --no-cache jq >/dev/null 2>&1
+
+        echo "=== Waiting for Vault ==="
+        until curl -sf http://vault:8200/v1/sys/health >/dev/null; do sleep 2; done
+        echo "Vault is ready"
+
+        echo "=== Setting up Root CA ==="
+        # Enable PKI
+        curl -sf -X POST http://vault:8200/v1/sys/mounts/pki \
+          -H "X-Vault-Token: root" \
+          -d '{"type":"pki"}' 2>/dev/null || echo "PKI already enabled"
+
+        # Tune PKI
+        curl -sf -X POST http://vault:8200/v1/sys/mounts/pki/tune \
+          -H "X-Vault-Token: root" \
+          -d '{"max_lease_ttl":"87600h"}'
+
+        # Generate root CA
+        curl -sf -X POST http://vault:8200/v1/pki/root/generate/internal \
+          -H "X-Vault-Token: root" \
+          -d '{"common_name":"demo.hashicorp","issuer_name":"root-2024","ttl":"87600h"}' >/dev/null 2>&1 || echo "Root CA exists"
+
+        # Configure URLs
+        curl -sf -X POST http://vault:8200/v1/pki/config/urls \
+          -H "X-Vault-Token: root" \
+          -d '{"issuing_certificates":"http://vault:8200/v1/pki/ca","crl_distribution_points":"http://vault:8200/v1/pki/crl"}'
+
+        echo "=== Setting up Intermediate CA ==="
+        # Enable PKI_INT
+        curl -sf -X POST http://vault:8200/v1/sys/mounts/pki_int \
+          -H "X-Vault-Token: root" \
+          -d '{"type":"pki"}' 2>/dev/null || echo "PKI_INT already enabled"
+
+        # Tune PKI_INT
+        curl -sf -X POST http://vault:8200/v1/sys/mounts/pki_int/tune \
+          -H "X-Vault-Token: root" \
+          -d '{"max_lease_ttl":"43800h"}'
+
+        # Generate intermediate CSR
+        CSR=$(curl -sf -X POST http://vault:8200/v1/pki_int/intermediate/generate/internal \
+          -H "X-Vault-Token: root" \
+          -d '{"common_name":"demo.hashicorp Intermediate Authority","issuer_name":"intermediate"}' | jq -r '.data.csr')
+
+        if [ -n "$CSR" ] && [ "$CSR" != "null" ]; then
+          # Sign with root
+          CERT=$(curl -sf -X POST http://vault:8200/v1/pki/root/sign-intermediate \
+            -H "X-Vault-Token: root" \
+            -d "{\"csr\":\"$CSR\",\"format\":\"pem_bundle\",\"ttl\":\"43800h\"}" | jq -r '.data.certificate')
+
+          # Set signed cert
+          curl -sf -X POST http://vault:8200/v1/pki_int/intermediate/set-signed \
+            -H "X-Vault-Token: root" \
+            -d "{\"certificate\":\"$CERT\"}"
+        fi
+
+        echo "=== Creating Consul Connect role ==="
+        curl -sf -X POST http://vault:8200/v1/pki_int/roles/consul-connect \
+          -H "X-Vault-Token: root" \
+          -d '{
+            "allowed_domains":"demo.hashicorp,consul,dc1.consul",
+            "allow_subdomains":true,
+            "allow_any_name":true,
+            "allow_bare_domains":true,
+            "allow_localhost":true,
+            "allow_ip_sans":true,
+            "max_ttl":"72h",
+            "require_cn":false
+          }'
+
+        echo "=== Waiting for Consul ==="
+        until curl -sf http://consul:8500/v1/status/leader | grep -q .; do sleep 2; done
+        echo "Consul is ready"
+
+        echo "=== Configuring Consul CA ==="
+        curl -sf -X PUT http://consul:8500/v1/connect/ca/configuration \
+          -H "Content-Type: application/json" \
+          -d '{
+            "Provider": "vault",
+            "Config": {
+              "Address": "http://vault:8200",
+              "Token": "root",
+              "RootPKIPath": "pki",
+              "IntermediatePKIPath": "pki_int",
+              "LeafCertTTL": "72h",
+              "PrivateKeyType": "rsa",
+              "PrivateKeyBits": 2048
+            }
+          }'
+
+        echo ""
+        echo "=== Bootstrap Complete ==="
+        echo "Vault PKI and Consul CA configured"
+        sleep 3
+    networks:
+      mesh:
+        ipv4_address: 10.10.0.12
+    depends_on:
+      vault:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+
+  # ==========================================================================
+  # Ollama (LLM Backend)
+  # ==========================================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      mesh:
+        ipv4_address: 10.10.0.20
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  ollama-sidecar:
+    image: hashicorp/consul:1.17
+    container_name: ollama-sidecar
+    command: >
+      consul connect proxy
+      -sidecar-for ollama
+    environment:
+      CONSUL_HTTP_ADDR: http://10.10.0.11:8500
+    network_mode: "service:ollama"
+    depends_on:
+      consul:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      ollama-register:
+        condition: service_completed_successfully
+
+  ollama-register:
+    image: hashicorp/consul:1.17
+    container_name: ollama-register
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        cat > /tmp/ollama.json << 'EOF'
+        {
+          "name": "ollama",
+          "port": 11434,
+          "address": "10.10.0.20",
+          "connect": {
+            "sidecar_service": {}
+          },
+          "check": {
+            "http": "http://10.10.0.20:11434/",
+            "interval": "10s"
+          }
+        }
+        EOF
+        curl -X PUT http://consul:8500/v1/agent/service/register -d @/tmp/ollama.json
+        echo "Ollama registered"
+    environment:
+      CONSUL_HTTP_ADDR: http://consul:8500
+    networks:
+      - mesh
+    depends_on:
+      consul:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+
+  # ==========================================================================
+  # Executor Agent
+  # ==========================================================================
+  executor:
+    build:
+      context: ./agents
+      args:
+        AGENT_TYPE: executor
+    container_name: executor
+    environment:
+      PORT: "8081"
+      OLLAMA_HOST: "127.0.0.1"
+      OLLAMA_PORT: "9002"
+      OLLAMA_MODEL: "qwen2.5:0.5b"
+    networks:
+      mesh:
+        ipv4_address: 10.10.0.30
+    depends_on:
+      consul:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  executor-sidecar:
+    image: hashicorp/consul:1.17
+    container_name: executor-sidecar
+    command: >
+      consul connect proxy
+      -sidecar-for executor-agent
+    environment:
+      CONSUL_HTTP_ADDR: http://10.10.0.11:8500
+    network_mode: "service:executor"
+    depends_on:
+      consul:
+        condition: service_healthy
+      executor-register:
+        condition: service_completed_successfully
+
+  executor-register:
+    image: hashicorp/consul:1.17
+    container_name: executor-register
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        cat > /tmp/executor.json << 'EOF'
+        {
+          "name": "executor-agent",
+          "port": 8081,
+          "address": "10.10.0.30",
+          "connect": {
+            "sidecar_service": {
+              "proxy": {
+                "upstreams": [{
+                  "destination_name": "ollama",
+                  "local_bind_port": 9002
+                }]
+              }
+            }
+          },
+          "check": {
+            "http": "http://10.10.0.30:8081/health",
+            "interval": "10s"
+          }
+        }
+        EOF
+        curl -X PUT http://consul:8500/v1/agent/service/register -d @/tmp/executor.json
+        echo "Executor registered"
+    environment:
+      CONSUL_HTTP_ADDR: http://consul:8500
+    networks:
+      - mesh
+    depends_on:
+      consul:
+        condition: service_healthy
+      executor:
+        condition: service_started
+
+  # ==========================================================================
+  # Planner Agent
+  # ==========================================================================
+  planner:
+    build:
+      context: ./agents
+      args:
+        AGENT_TYPE: planner
+    container_name: planner
+    environment:
+      PORT: "8080"
+      EXECUTOR_HOST: "127.0.0.1"
+      EXECUTOR_PORT: "9001"
+    ports:
+      - "8080:8080"
+    networks:
+      mesh:
+        ipv4_address: 10.10.0.40
+    depends_on:
+      consul:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  planner-sidecar:
+    image: hashicorp/consul:1.17
+    container_name: planner-sidecar
+    command: >
+      consul connect proxy
+      -sidecar-for planner-agent
+    environment:
+      CONSUL_HTTP_ADDR: http://10.10.0.11:8500
+    network_mode: "service:planner"
+    depends_on:
+      consul:
+        condition: service_healthy
+      planner-register:
+        condition: service_completed_successfully
+
+  planner-register:
+    image: hashicorp/consul:1.17
+    container_name: planner-register
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        cat > /tmp/planner.json << 'EOF'
+        {
+          "name": "planner-agent",
+          "port": 8080,
+          "address": "10.10.0.40",
+          "connect": {
+            "sidecar_service": {
+              "proxy": {
+                "upstreams": [{
+                  "destination_name": "executor-agent",
+                  "local_bind_port": 9001
+                }]
+              }
+            }
+          },
+          "check": {
+            "http": "http://10.10.0.40:8080/health",
+            "interval": "10s"
+          }
+        }
+        EOF
+        curl -X PUT http://consul:8500/v1/agent/service/register -d @/tmp/planner.json
+        echo "Planner registered"
+    environment:
+      CONSUL_HTTP_ADDR: http://consul:8500
+    networks:
+      - mesh
+    depends_on:
+      consul:
+        condition: service_healthy
+      planner:
+        condition: service_started
+
+networks:
+  mesh:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.0.0/24
+
+volumes:
+  ollama-data:
