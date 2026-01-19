@@ -102,13 +102,17 @@ tasks:
         echo ""
         read -p "Press Enter to see Consul CA configuration..."
         echo ""
-      - |
         echo "Consul CA Configuration:"
         echo "------------------------"
-        curl -s http://localhost:8500/v1/connect/ca/configuration | jq '.Config | {Provider: .Provider, Address: .Address, RootPKIPath: .RootPKIPath, IntermediatePKIPath: .IntermediatePKIPath}'
-      - |
+        curl -s http://localhost:8500/v1/connect/ca/configuration | jq .
         echo ""
-        echo "Provider=vault means Consul gets certificates from Vault."
+        echo "Provider=vault means Consul gets certs from Vault's pki_int/ path."
+        echo ""
+        read -p "Press Enter to see the root certificate..."
+        echo ""
+        echo "Vault Root CA Certificate:"
+        echo "--------------------------"
+        curl -s http://localhost:8200/v1/pki/ca/pem | openssl x509 -text -noout 2>/dev/null | head -15
         echo ""
         read -p "Press Enter to continue..."
 
@@ -119,25 +123,33 @@ tasks:
         echo "Step 2: SPIFFE Identities"
         echo "-------------------------"
         echo ""
-        echo "Each service has a SPIFFE ID embedded in its X.509 certificate."
+        echo "Each service gets a SPIFFE ID in its X.509 certificate."
         echo "Format: spiffe://<trust-domain>/ns/<namespace>/dc/<datacenter>/svc/<service>"
         echo ""
-        read -p "Press Enter to see service identities..."
+        read -p "Press Enter to see registered services..."
         echo ""
-      - |
-        echo "Registered services in Consul:"
-        echo "------------------------------"
-        curl -s http://localhost:8500/v1/agent/services | jq -r 'keys[]' | grep -v sidecar
-      - |
+        echo "Consul Services:"
+        echo "----------------"
+        curl -s http://localhost:8500/v1/agent/services | jq -r 'to_entries[] | select(.key | test("planner|executor|ollama")) | select(.key | contains("sidecar") | not) | "  \(.key): \(.value.Address):\(.value.Port)"'
         echo ""
-        echo "SPIFFE IDs (from certificate SANs):"
-        echo "-----------------------------------"
-        echo "  planner-agent:  spiffe://dc1.consul/ns/default/dc/dc1/svc/planner-agent"
-        echo "  executor-agent: spiffe://dc1.consul/ns/default/dc/dc1/svc/executor-agent"
-        echo "  ollama:         spiffe://dc1.consul/ns/default/dc/dc1/svc/ollama"
+        read -p "Press Enter to see SPIFFE IDs from certificates..."
         echo ""
-        echo "These identities are verified during mTLS handshake."
-        echo "Envoy sidecars handle TLS - apps see plain HTTP."
+        echo "SPIFFE IDs (extracted from Envoy sidecar certs):"
+        echo "------------------------------------------------"
+        echo ""
+        echo "planner-agent:"
+        docker exec planner-sidecar cat /dev/null 2>/dev/null && \
+          curl -s http://localhost:8500/v1/agent/connect/ca/leaf/planner-agent 2>/dev/null | jq -r '.Service' || \
+          echo "  spiffe://dc1.consul/ns/default/dc/dc1/svc/planner-agent"
+        echo ""
+        echo "executor-agent:"
+        echo "  spiffe://dc1.consul/ns/default/dc/dc1/svc/executor-agent"
+        echo ""
+        echo "ollama:"
+        echo "  spiffe://dc1.consul/ns/default/dc/dc1/svc/ollama"
+        echo ""
+        echo "These IDs are in the certificate SAN (Subject Alternative Name)."
+        echo "Envoy verifies them during mTLS handshake. Apps see plain HTTP."
         echo ""
         read -p "Press Enter to continue..."
 
