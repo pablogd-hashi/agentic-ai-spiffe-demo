@@ -30,7 +30,8 @@ def print_banner():
     print(f"\n{BOLD}╔════════════════════════════════════════════════════════════╗{RESET}")
     print(f"{BOLD}║  Agentic AI Interactive Chat                              ║{RESET}")
     print(f"{BOLD}╚════════════════════════════════════════════════════════════╝{RESET}\n")
-    print(f"{YELLOW}Identity Flow:{RESET} You → planner-agent → executor-agent → ollama\n")
+    print(f"{YELLOW}Identity Flow:{RESET} You → planner-agent → executor-agent → ollama")
+    print(f"{YELLOW}Note:{RESET} Ollama runs on CPU. Responses may take 10-30 seconds.\n")
     print(f"{YELLOW}Commands:{RESET}")
     print(f"  {GREEN}exit{RESET}     - Exit the chat")
     print(f"  {GREEN}health{RESET}   - Check system health")
@@ -50,7 +51,7 @@ def check_health():
             return False
     except requests.exceptions.ConnectionError:
         print(f"{RED}✗ Cannot connect to planner agent at {PLANNER_URL}{RESET}")
-        print(f"{YELLOW}  Make sure services are running: task services:status{RESET}")
+        print(f"{YELLOW}  Make sure services are running: docker compose ps{RESET}")
         return False
     except Exception as e:
         print(f"{RED}✗ Health check failed: {e}{RESET}")
@@ -86,7 +87,7 @@ def ask_question(question):
             PLANNER_URL,
             json={"question": question},
             headers={"Content-Type": "application/json"},
-            timeout=60
+            timeout=120
         )
 
         end_time = datetime.now()
@@ -110,8 +111,8 @@ def ask_question(question):
             print(f"  1. Consul intentions are missing")
             print(f"  2. Services are not fully started")
             print(f"\n{YELLOW}Try:{RESET}")
-            print(f"  task consul:intentions:create")
-            print(f"  task consul:intentions:list")
+            print(f"  task allow")
+            print(f"  docker exec consul consul intention list")
             return False
 
         else:
@@ -126,13 +127,13 @@ def ask_question(question):
             return False
 
     except requests.exceptions.Timeout:
-        print(f"{RED}✗ Request timed out after 60 seconds{RESET}")
-        print(f"{YELLOW}The model might be processing a complex query{RESET}")
+        print(f"{RED}✗ Request timed out after 120 seconds{RESET}")
+        print(f"{YELLOW}Ollama on CPU is slow. Keep questions short.{RESET}")
         return False
 
     except requests.exceptions.ConnectionError:
         print(f"{RED}✗ Connection refused{RESET}")
-        print(f"{YELLOW}Check that services are running: task services:status{RESET}")
+        print(f"{YELLOW}Check that services are running: docker compose ps{RESET}")
         return False
 
     except Exception as e:

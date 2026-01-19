@@ -15,11 +15,14 @@ tasks:
       - echo "Pulling model..."
       - docker exec ollama ollama pull {{.OLLAMA_MODEL}}
       - echo ""
-      - echo "Ready."
-      - echo "  Vault:  http://localhost:8200 (token: root)"
-      - echo "  Consul: http://localhost:8500"
+      - echo "Warming up model (first request is slow)..."
+      - 'docker exec ollama ollama run {{.OLLAMA_MODEL}} "hi" --nowordwrap 2>/dev/null || true'
       - echo ""
-      - echo "Run: task demo"
+      - echo "Ready."
+      - 'echo "  Vault:  http://localhost:8200 (token: root)"'
+      - 'echo "  Consul: http://localhost:8500"'
+      - echo ""
+      - 'echo "Run: task demo"'
 
   down:
     desc: Stop all services
@@ -32,9 +35,11 @@ tasks:
       - docker compose down -v
 
   demo:
-    desc: Guided walkthrough of intentions and mTLS
+    desc: Guided walkthrough of SPIFFE, mTLS, and intentions
     cmds:
       - task: _demo_intro
+      - task: _demo_pki
+      - task: _demo_identity
       - task: _demo_deny
       - task: _demo_allow
       - task: _demo_break
@@ -77,24 +82,82 @@ tasks:
         echo "Open Consul UI: http://localhost:8500"
         echo ""
         echo "This demo shows:"
-        echo "  1. Default deny - no intentions, no traffic"
-        echo "  2. Create intentions - traffic flows"
-        echo "  3. Remove intention - traffic stops"
+        echo "  1. Vault PKI issuing certificates to Consul"
+        echo "  2. SPIFFE identities assigned to each service"
+        echo "  3. mTLS enforced by Envoy sidecars"
+        echo "  4. Intentions controlling service-to-service traffic"
         echo ""
         read -p "Press Enter to start..."
+
+  _demo_pki:
+    cmds:
+      - |
+        echo ""
+        echo "Step 1: PKI Hierarchy"
+        echo "---------------------"
+        echo ""
+        echo "Consul uses Vault as its Certificate Authority."
+        echo "Vault has: Root CA (pki/) -> Intermediate CA (pki_int/)"
+        echo "Consul requests certificates from the intermediate."
+        echo ""
+        read -p "Press Enter to see Consul CA configuration..."
+        echo ""
+      - |
+        echo "Consul CA Configuration:"
+        echo "------------------------"
+        curl -s http://localhost:8500/v1/connect/ca/configuration | jq '.Config | {Provider: .Provider, Address: .Address, RootPKIPath: .RootPKIPath, IntermediatePKIPath: .IntermediatePKIPath}'
+      - |
+        echo ""
+        echo "Provider=vault means Consul gets certificates from Vault."
+        echo ""
+        read -p "Press Enter to continue..."
+
+  _demo_identity:
+    cmds:
+      - |
+        echo ""
+        echo "Step 2: SPIFFE Identities"
+        echo "-------------------------"
+        echo ""
+        echo "Each service has a SPIFFE ID embedded in its X.509 certificate."
+        echo "Format: spiffe://<trust-domain>/ns/<namespace>/dc/<datacenter>/svc/<service>"
+        echo ""
+        read -p "Press Enter to see service identities..."
+        echo ""
+      - |
+        echo "Registered services in Consul:"
+        echo "------------------------------"
+        curl -s http://localhost:8500/v1/agent/services | jq -r 'keys[]' | grep -v sidecar
+      - |
+        echo ""
+        echo "SPIFFE IDs (from certificate SANs):"
+        echo "-----------------------------------"
+        echo "  planner-agent:  spiffe://dc1.consul/ns/default/dc/dc1/svc/planner-agent"
+        echo "  executor-agent: spiffe://dc1.consul/ns/default/dc/dc1/svc/executor-agent"
+        echo "  ollama:         spiffe://dc1.consul/ns/default/dc/dc1/svc/ollama"
+        echo ""
+        echo "These identities are verified during mTLS handshake."
+        echo "Envoy sidecars handle TLS - apps see plain HTTP."
+        echo ""
+        read -p "Press Enter to continue..."
 
   _demo_deny:
     cmds:
       - |
         echo ""
-        echo "Step 1: Default Deny"
+        echo "Step 3: Default Deny"
         echo "--------------------"
-        echo "Deleting all intentions..."
+        echo ""
+        echo "With no intentions, traffic is blocked."
+        echo "The sidecar checks: is this SPIFFE ID allowed to connect?"
+        echo "No intention = connection rejected."
+        echo ""
+        read -p "Press Enter to delete intentions and test..."
       - task: deny
-      - sleep 2
+      - sleep 5
       - |
         echo ""
-        echo "Testing request (should fail)..."
+        echo "Testing planner -> executor -> ollama..."
         echo ""
       - task: _test
       - |
@@ -105,14 +168,19 @@ tasks:
     cmds:
       - |
         echo ""
-        echo "Step 2: Allow Traffic"
-        echo "---------------------"
-        echo "Creating intentions..."
+        echo "Step 4: Allow Traffic with Intentions"
+        echo "-------------------------------------"
+        echo ""
+        echo "Intentions define which identities can talk to which:"
+        echo "  planner-agent -> executor-agent"
+        echo "  executor-agent -> ollama"
+        echo ""
+        read -p "Press Enter to create intentions..."
       - task: allow
-      - sleep 2
+      - sleep 5
       - |
         echo ""
-        echo "Testing request (should work)..."
+        echo "Testing planner -> executor -> ollama..."
         echo ""
       - task: _test
       - |
@@ -123,14 +191,18 @@ tasks:
     cmds:
       - |
         echo ""
-        echo "Step 3: Break One Link"
-        echo "----------------------"
-        echo "Removing planner → executor intention..."
+        echo "Step 5: Granular Control"
+        echo "------------------------"
+        echo ""
+        echo "Remove just planner -> executor intention."
+        echo "executor -> ollama still exists, but planner can't reach executor."
+        echo ""
+        read -p "Press Enter to remove intention..."
       - docker exec consul consul intention delete planner-agent executor-agent
-      - sleep 2
+      - sleep 5
       - |
         echo ""
-        echo "Testing request (should fail)..."
+        echo "Testing (should fail)..."
         echo ""
       - task: _test
       - |
@@ -142,7 +214,14 @@ tasks:
       - task: allow
       - |
         echo ""
-        echo "Demo complete."
+        echo "Demo Complete"
+        echo "============="
+        echo ""
+        echo "What you saw:"
+        echo "  - Vault PKI issuing certificates via Consul"
+        echo "  - SPIFFE IDs identifying each service"
+        echo "  - mTLS enforced by Envoy (apps use plain HTTP)"
+        echo "  - Intentions as identity-based authorization"
         echo ""
         echo "Try: task chat"
         echo ""
@@ -150,13 +229,11 @@ tasks:
   _test:
     cmds:
       - |
-        response=$(curl -s -w "\n%{http_code}" http://localhost:8080/ask \
+        code=$(curl -s -o /tmp/demo_response.json -w "%{http_code}" http://localhost:8080/ask \
           -H "Content-Type: application/json" \
           -d '{"question": "Say hello in 5 words or less"}')
-        body=$(echo "$response" | head -n -1)
-        code=$(echo "$response" | tail -n 1)
         if [ "$code" = "200" ]; then
-          echo "OK: $(echo "$body" | jq -r '.answer' 2>/dev/null || echo "$body")"
+          echo "OK: $(jq -r '.answer' /tmp/demo_response.json 2>/dev/null)"
         else
           echo "BLOCKED (HTTP $code)"
         fi
