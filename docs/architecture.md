@@ -2,25 +2,33 @@
 
 ## Control plane and data plane
 
-The system has two layers.
+The system is split into two layers.
 
-The **control plane** is Vault and Consul. They issue certificates, store configuration, and define authorization rules. During normal operation, they are not in the request path. If Vault goes down, traffic keeps flowing. Certificates are already issued. Consul caches what it needs.
+The **control plane** consists of Vault and Consul. This layer is responsible for issuing identities, managing trust, and defining authorization rules. It is not involved in handling application requests during normal operation. Once certificates are issued and policies are in place, traffic flows without Vault or Consul being on the request path.
 
-The **data plane** is the agents and Ollama. They handle actual requests. Each service has an Envoy sidecar that terminates TLS and checks authorization. The sidecars do the work at runtime.
+If Vault becomes unavailable, existing services continue to communicate using already issued certificates. Consul caches the information it needs to enforce policy locally.
+
+The **data plane** consists of the agents and the Ollama service. These components handle actual application traffic. Each service runs alongside an Envoy sidecar that terminates TLS, verifies peer identity, and enforces authorization decisions. All runtime enforcement happens here.
+
+---
 
 ## How Vault and Consul work together
 
-Vault runs a two-tier PKI. There is a root CA that signs an intermediate CA. The root private key never leaves Vault. Consul is configured to use the intermediate CA.
+Vault provides a two-tier PKI hierarchy. A root certificate authority signs an intermediate certificate authority. The root private key never leaves Vault and is only used to sign intermediates. Consul is configured to use the intermediate CA to issue workload certificates.
 
-When a service starts, Consul generates a private key for its sidecar, creates a certificate signing request, and sends it to Vault. Vault signs it. Consul delivers the certificate to the sidecar. The application never sees this. It just makes HTTP calls to localhost.
+When a service starts, Consul generates a private key for the sidecar, creates a certificate signing request, and sends it to Vault. Vault signs the request using the intermediate CA and returns the certificate. Consul delivers the certificate to the sidecar.
 
-Workloads never talk to Vault directly. They do not need Vault credentials. Consul handles everything.
+The application never sees certificates or keys. It simply makes HTTP calls to localhost.
 
-Certificate rotation happens automatically. Before a cert expires, Consul requests a new one. The sidecar reloads without dropping connections.
+Workloads never authenticate to Vault directly and do not need Vault credentials. All certificate issuance and rotation is handled by Consul on their behalf.
+
+Certificates are short-lived and rotated automatically. Before a certificate expires, Consul requests a new one and the sidecar reloads it without dropping connections.
+
+---
 
 ## SPIFFE identity
 
-Each service gets a SPIFFE ID. This is a URI embedded in the X.509 certificate as a Subject Alternative Name:
+Each service is assigned a SPIFFE ID. This is a URI embedded in the X.509 certificate as a Subject Alternative Name:
 
 ```
 spiffe://dc1.consul/ns/default/dc/dc1/svc/planner-agent
@@ -28,59 +36,65 @@ spiffe://dc1.consul/ns/default/dc/dc1/svc/executor-agent
 spiffe://dc1.consul/ns/default/dc/dc1/svc/ollama
 ```
 
-When two services connect, they exchange certificates during the TLS handshake. The receiving sidecar extracts the SPIFFE ID from the client certificate and checks if that identity is allowed to connect.
+When two services connect, they exchange certificates as part of the TLS handshake. Each sidecar verifies the peer certificate and extracts the SPIFFE ID. Authorization decisions are made based on that identity.
 
-The trust domain is `dc1.consul`. Consul picked this format. All services in the same Consul datacenter share the trust domain.
+The trust domain here is `dc1.consul`. This format is chosen by Consul. All services registered in the same Consul datacenter share the trust domain.
 
 ### Why X.509 and not JWT
 
-SPIFFE defines two credential types: X.509-SVID and JWT-SVID.
+SPIFFE defines two credential formats: X.509-SVID and JWT-SVID.
 
-X.509 works at the TLS layer. The private key never leaves the workload. If you intercept the certificate, you cannot impersonate the service because you do not have the key.
+X.509 credentials operate at the TLS layer. Authentication happens during the handshake and is bound to possession of a private key. Even if a certificate is intercepted, it cannot be used to impersonate a service without the corresponding key.
 
-JWTs live at the application layer and behave like bearer tokens. If someone gets the token, they can replay it. JWTs are useful when you need to pass identity through systems that do not speak TLS, but they need more careful handling.
+JWT credentials operate at the application layer and behave like bearer tokens. Anyone in possession of the token can replay it. JWTs are useful in environments where mutual TLS is not possible, but they require additional care to avoid leakage and misuse.
 
-This demo uses X.509 only. The application code never touches certificates or tokens.
+This demo uses X.509 exclusively. Identity verification happens transparently in the sidecars. The application code does not handle certificates or tokens.
+
+---
 
 ## Intentions
 
-An intention is a rule: service A can connect to service B, or service A cannot connect to service B.
+An intention is an explicit rule that allows or denies communication between two services.
 
-With no intentions, the default is **deny**. No service can connect to any other service. The sidecar rejects the connection before it reaches the application.
+With no intentions defined, the default behavior is **deny**. No service can talk to any other service. Connections are rejected by the sidecar before they reach the application.
 
-This is fail-safe. If you forget to configure something, traffic is blocked. You do not accidentally expose services.
+This makes failure modes predictable. Missing configuration results in blocked traffic rather than unintended access.
 
-Intentions are identity-based. The sidecar checks the SPIFFE ID in the client certificate, not the IP address. You can move services between hosts and authorization still works.
+Intentions are evaluated based on identity, not network location. The sidecar checks the SPIFFE ID presented in the client certificate, not IP addresses. Services can move between hosts without changing authorization behavior.
 
-When you create or delete an intention, it takes effect within seconds. No restarts. The sidecars watch Consul for changes.
+Changes to intentions take effect within seconds. No restarts are required. Sidecars watch Consul for policy updates and apply them dynamically.
+
+---
 
 ## The agent model
 
-The agents are Flask apps. No memory, no planning loops, no tool calling. They exist to make identity boundaries visible.
+The agents in this demo are simple Flask applications. They have no memory, planning logic, or tool orchestration. Their purpose is to make identity boundaries and authorization paths explicit.
 
 ### planner-agent
 
-The planner is the entry point. Users send questions to it. It forwards them to the executor and returns the response.
+The planner is the entry point for user requests. It accepts questions, forwards them to the executor, and returns the response.
 
-The planner cannot call Ollama. There is no intention allowing it. If you tried to add a direct connection, the sidecar would block it.
+The planner has no permission to call Ollama directly. There is no intention allowing that path. Any attempt to bypass the executor would be blocked by the sidecar.
 
-In a real system, a planner might decompose tasks and coordinate multiple executors. Here it just forwards requests. The point is that it has a distinct identity from the thing it calls.
+In a real system, a planner might coordinate multiple executors or decompose tasks. Here it simply forwards requests. The important part is that it has a distinct identity from the service it calls.
 
 ### executor-agent
 
-The executor calls Ollama. It receives prompts from the planner, sends them to the LLM, and returns results.
+The executor receives requests from the planner and calls Ollama for inference. It returns the result back to the planner.
 
-The executor is the only service with an intention to reach Ollama. This is the authorization boundary. Even if something compromises the planner, it cannot reach the LLM directly.
+The executor is the only service with permission to reach Ollama. This is the key authorization boundary. Even if the planner is compromised, it cannot access the LLM directly.
 
-In a real system, executors might access databases, payment APIs, or other sensitive resources. The pattern is the same: give the executor its own identity and grant access explicitly.
+In real deployments, executors might access databases, external APIs, or other sensitive systems. The pattern is the same: give each role its own identity and grant access explicitly.
 
 ### ollama
 
 Ollama is a local LLM runtime. In this demo it runs a small model on CPU.
 
-Ollama represents any inference endpoint. It could be a managed API, a GPU cluster, or a fine-tuned model. The identity model does not care what is behind the service.
+It represents any inference service: a managed API, a private model server, or a GPU-backed cluster. The identity and authorization model does not depend on what runs behind the service.
 
-Inference is treated as a protected resource because it is. LLM calls can cost money, expose data through prompts, and produce outputs that need auditing. Limiting which identities can reach inference is basic hygiene.
+Inference is treated as a protected capability. LLM calls can be expensive, may expose sensitive context through prompts, and produce outputs that require auditing. Restricting which identities can access inference reduces risk and limits blast radius.
+
+---
 
 ## Request flow
 
@@ -92,7 +106,7 @@ User
   ▼
 ┌──────────────────────┐
 │    planner-agent     │  ← SPIFFE ID: .../svc/planner-agent
-│      (Flask)         │
+│       (Flask)        │
 └──────────┬───────────┘
            │
            │  HTTP to localhost:9001
@@ -112,7 +126,7 @@ User
            ▼
 ┌──────────────────────┐
 │   executor-agent     │  ← SPIFFE ID: .../svc/executor-agent
-│      (Flask)         │
+│       (Flask)        │
 └──────────┬───────────┘
            │
            │  HTTP to localhost:9002
@@ -132,16 +146,20 @@ User
            ▼
 ┌──────────────────────┐
 │       ollama         │  ← SPIFFE ID: .../svc/ollama
-│     (LLM runtime)    │
+│    (LLM runtime)     │
 └──────────────────────┘
 ```
 
-The Flask apps make plain HTTP requests to localhost ports. The sidecars intercept, establish mTLS to the destination sidecar, and forward. The apps do not know about certificates or intentions.
+The applications make plain HTTP requests to localhost. The sidecars intercept traffic, establish mutual TLS with the destination sidecar, and enforce authorization. The applications are unaware of certificates, identities, or intentions.
+
+---
 
 ## Docker Compose vs Nomad
 
-This demo uses Docker Compose. It runs anywhere Docker runs.
+This demo uses Docker Compose to keep the setup simple and portable.
 
-The `nomad/` directory has job specs for the same architecture. Nomad provides proper sidecar injection and uses CNI for transparent proxying, which requires Linux. The `scripts/` directory has automation for running this on a Linux VM via Multipass.
+The `nomad/` directory contains job specifications for running the same architecture with Nomad. Nomad provides native Consul Connect integration, proper sidecar injection, and CNI-based transparent proxying, which requires Linux.
 
-The architecture is identical either way. Docker Compose is simpler. Nomad is closer to how you would run this in production.
+The `scripts/` directory includes automation for running the Nomad setup inside a Linux VM using Multipass.
+
+The architecture is the same in both cases. Docker Compose is easier to run locally. Nomad is closer to production.

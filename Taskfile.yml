@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  OLLAMA_MODEL: qwen2.5:0.5b
+  OLLAMA_MODEL: tinyllama
 
 tasks:
   up:
@@ -16,13 +16,18 @@ tasks:
       - docker exec ollama ollama pull {{.OLLAMA_MODEL}}
       - echo ""
       - echo "Warming up model (first request is slow)..."
-      - 'docker exec ollama ollama run {{.OLLAMA_MODEL}} "hi" --nowordwrap 2>/dev/null || true'
+      - 'docker exec ollama ollama run {{.OLLAMA_MODEL}} "hi" --nowordwrap >/dev/null 2>&1 || true'
       - echo ""
       - echo "Ready."
       - 'echo "  Vault:  http://localhost:8200 (token: root)"'
       - 'echo "  Consul: http://localhost:8500"'
       - echo ""
       - 'echo "Run: task demo"'
+      - echo ""
+      - 'echo "Sample questions (short = fast on CPU):"'
+      - 'echo "  What is 2+2?"'
+      - 'echo "  What is SPIFFE?"'
+      - 'echo "  Define mTLS."'
 
   down:
     desc: Stop all services
@@ -236,6 +241,11 @@ tasks:
         echo "  - Intentions as identity-based authorization"
         echo ""
         echo "Try: task chat"
+        echo ""
+        echo "Sample questions (short = fast on CPU):"
+        echo "  What is 2+2?"
+        echo "  What is SPIFFE?"
+        echo "  Define mTLS."
         echo ""
 
   _test:
