@@ -37,8 +37,6 @@ You only need:
 - **Task**
   https://taskfile.dev
 
-No Kubernetes. No cloud account. No GPUs.
-
 ---
 
 ## Running the demo
