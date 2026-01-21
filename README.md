@@ -2,7 +2,7 @@
 
 This demo shows how workload identity and authorization behave when AI services communicate with each other.
 
-Instead of API keys or network-based trust, services authenticate using **SPIFFE identities**, establish **mutual TLS**, and rely on **Consul intentions** for authorization. Identity and policy are enforced at runtime by sidecar proxies, not application code.
+Instead of API keys or network-based trust, services authenticate using SPIFFE identities, establish mutual TLS, and rely on Consul intentions for authorization. Identity and policy are enforced at runtime by sidecar proxies, not application code.
 
 The goal is to make these mechanics visible, observable, and hard to get wrong.
 
