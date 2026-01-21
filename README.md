@@ -25,6 +25,15 @@ The agents are intentionally simple Flask applications. They are not AI framewor
 
 They exist to create **clear identity boundaries** and to demonstrate how authorization is enforced between services. The planner never talks to Ollama. The executor never talks to users. Those constraints are enforced by identity and policy, not convention.
 
+Each service runs with a sidecar proxy:
+- **planner** + **planner-sidecar** (Consul Connect proxy running Envoy)
+- **executor** + **executor-sidecar** (Consul Connect proxy running Envoy)
+- **ollama** + **ollama-sidecar** (Consul Connect proxy running Envoy)
+
+The agents talk to `localhost`. The sidecar intercepts outbound connections, performs the mTLS handshake using certificates from Vault, checks intentions, and proxies traffic if allowed. Inbound traffic goes through the same process in reverse.
+
+The application code sees plain HTTP. The sidecar does the crypto and identity checks.
+
 ---
 
 ## Prerequisites
@@ -47,13 +56,26 @@ Start all services:
 task up
 ```
 
+This does several things in sequence:
+1. Spins up Vault, Consul, and the three services with their sidecar proxies
+2. Runs a bootstrap job that configures Vault's PKI hierarchy and wires Consul to use it as a CA
+3. Pulls the `tinyllama` model (first run only — it's about 600MB)
+4. Warms up the model with a throwaway request so the first real query isn't slow
+
+The whole process takes a minute or two the first time. Subsequent starts are faster because the model is cached in a volume.
+
 Once everything is running, start the guided walkthrough:
 
 ```bash
 task demo
 ```
 
-The demo is interactive and pauses at each step so you can inspect what's happening.
+The demo is interactive and pauses at each step so you can inspect what's happening. It walks through:
+- Vault's root and intermediate CA setup
+- SPIFFE IDs embedded in service certificates
+- Default deny behavior (no intentions = blocked traffic)
+- Creating intentions and watching traffic flow
+- Removing an intention to break the chain
 
 While it runs, open the Consul UI:
 
@@ -69,7 +91,9 @@ After the walkthrough, try the interactive chat:
 task chat
 ```
 
-This lets you ask arbitrary questions and see how requests flow through the planner, executor, and Ollama.
+This is a Python script that sends questions to the planner. You'll see requests flow through the planner, executor, and Ollama with full mTLS enforcement between each hop.
+
+Keep questions short. The model runs on CPU and longer prompts take longer to answer.
 
 ---
 
@@ -102,6 +126,21 @@ This makes failure modes obvious and safe. Authorization is explicit. Nothing wo
 | `task down` | Stop everything |
 | `task demo` | Guided walkthrough |
 | `task chat` | Interactive chat interface |
+| `task allow` | Create intentions manually |
+| `task deny` | Delete intentions manually |
+| `task logs` | Follow all container logs |
+
+---
+
+## Notes
+
+**First run**: The `tinyllama` model gets pulled on first start. It's about 600MB. This happens once and gets cached in a Docker volume.
+
+**Performance**: The model runs on CPU. Answers to short questions come back in a few seconds. Longer prompts take longer. This is intentional — the demo doesn't require a GPU.
+
+**Bootstrap timing**: Services start with health checks. The bootstrap container waits for Vault and Consul to be ready before configuring PKI. If you see errors on first boot, wait 10 seconds and check `docker compose logs bootstrap`. It usually means something hadn't started yet.
+
+**Intentions**: You can create and delete intentions manually with `task allow` and `task deny`. Changes take effect immediately — no restarts needed.
 
 ---
 
