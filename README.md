@@ -1,120 +1,89 @@
 # Agentic AI SPIFFE Demo
 
-This demo shows how workload identity and authorization behave when AI services communicate with each other.
+Three AI agents talking to each other over mTLS, authenticated by SPIFFE identities, authorized by Consul intentions.
 
-Instead of API keys or network-based trust, services authenticate using SPIFFE identities, establish mutual TLS, and rely on Consul intentions for authorization. Identity and policy are enforced at runtime by sidecar proxies, not application code.
+No API keys. No network policies. No application-layer auth logic. Identity and authorization happen at the sidecar proxy, using certificates issued by Vault and enforced at runtime.
 
-The goal is to make these mechanics visible, observable, and hard to get wrong.
+The point is to see how this works and why it's hard to misconfigure.
 
 ---
 
 ## What's in this demo
 
-The system consists of three services:
+Three services:
 
-- **planner-agent**
-  Entry point for user requests. Accepts questions but cannot reach the LLM directly.
+- **planner-agent** — takes user questions, forwards them to the executor. Cannot talk to Ollama directly.
+- **executor-agent** — receives requests from the planner, calls the LLM. Cannot accept user traffic.
+- **ollama** — local inference. Unaware of agents, identity, or authorization.
 
-- **executor-agent**
-  Receives requests from the planner and calls the LLM. Cannot accept user traffic.
+The agents are minimal Flask apps. They're not AI frameworks and they don't wrap Ollama. They exist to create identity boundaries. The planner never talks to Ollama. The executor never talks to users. These constraints aren't convention — they're enforced by SPIFFE identities and Consul intentions.
 
-- **ollama**
-  Local inference service. No awareness of agents, identity, or authorization.
+Each service has a sidecar:
+- **planner** + **planner-sidecar** (Consul Connect proxy)
+- **executor** + **executor-sidecar** (Consul Connect proxy)
+- **ollama** + **ollama-sidecar** (Consul Connect proxy)
 
-The agents are intentionally simple Flask applications. They are not AI frameworks and they are not wrappers around Ollama.
+Apps talk plain HTTP to `localhost`. The sidecar intercepts outbound calls, does the mTLS handshake with a Vault-issued cert, checks the intention, and either allows or drops the connection. Same process in reverse for inbound traffic.
 
-They exist to create **clear identity boundaries** and to demonstrate how authorization is enforced between services. The planner never talks to Ollama. The executor never talks to users. Those constraints are enforced by identity and policy, not convention.
-
-Each service runs with a sidecar proxy:
-- **planner** + **planner-sidecar** (Consul Connect proxy running Envoy)
-- **executor** + **executor-sidecar** (Consul Connect proxy running Envoy)
-- **ollama** + **ollama-sidecar** (Consul Connect proxy running Envoy)
-
-The agents talk to `localhost`. The sidecar intercepts outbound connections, performs the mTLS handshake using certificates from Vault, checks intentions, and proxies traffic if allowed. Inbound traffic goes through the same process in reverse.
-
-The application code sees plain HTTP. The sidecar does the crypto and identity checks.
+Application code never touches crypto or identity.
 
 ---
 
 ## Prerequisites
 
-You only need:
+- Docker (Desktop works)
+- Task (https://taskfile.dev)
 
-- **Docker**
-  Docker Desktop works fine.
-
-- **Task**
-  https://taskfile.dev
+No Kubernetes, cloud account, or GPU required.
 
 ---
 
 ## Running the demo
 
-Start all services:
-
 ```bash
 task up
 ```
 
-This does several things in sequence:
-1. Spins up Vault, Consul, and the three services with their sidecar proxies
-2. Runs a bootstrap job that configures Vault's PKI hierarchy and wires Consul to use it as a CA
-3. Pulls the `tinyllama` model (first run only — it's about 600MB)
-4. Warms up the model with a throwaway request so the first real query isn't slow
+This starts Vault, Consul, the three services, and their sidecars. Then:
+1. Bootstrap container configures Vault's PKI (root + intermediate CA)
+2. Consul gets wired to Vault as its CA
+3. `tinyllama` model gets pulled (600MB, first run only, cached in a volume)
+4. Model gets warmed with a throwaway request
 
-The whole process takes a minute or two the first time. Subsequent starts are faster because the model is cached in a volume.
+First run takes a couple minutes. Subsequent starts are faster.
 
-Once everything is running, start the guided walkthrough:
+Once it's up, run the guided walkthrough:
 
 ```bash
 task demo
 ```
 
-The demo is interactive and pauses at each step so you can inspect what's happening. It walks through:
-- Vault's root and intermediate CA setup
-- SPIFFE IDs embedded in service certificates
-- Default deny behavior (no intentions = blocked traffic)
-- Creating intentions and watching traffic flow
-- Removing an intention to break the chain
-
-While it runs, open the Consul UI:
+This walks through Vault's CA setup, SPIFFE IDs in certificates, default deny, creating intentions, and breaking the chain by removing one. It pauses at each step. Open the Consul UI while it runs:
 
 ```
 http://localhost:8500
 ```
 
-You can watch services register, intentions appear and disappear, and traffic get allowed or denied in real time.
+Watch services register, intentions appear and disappear, traffic get blocked or allowed.
 
-After the walkthrough, try the interactive chat:
+After the walkthrough, try interactive chat:
 
 ```bash
 task chat
 ```
 
-This is a Python script that sends questions to the planner. You'll see requests flow through the planner, executor, and Ollama with full mTLS enforcement between each hop.
-
-Keep questions short. The model runs on CPU and longer prompts take longer to answer.
+Sends questions to the planner. Requests flow through planner → executor → Ollama with mTLS between each hop. Keep questions short — the model runs on CPU.
 
 ---
 
 ## What the demo shows
 
-The flow is intentionally simple and repeatable:
+1. Services start. No intentions exist. All traffic denied by default.
+2. Intentions get created: planner → executor, executor → ollama.
+3. Traffic flows immediately. No restarts, no config reloads.
+4. Remove one intention. Traffic stops instantly.
 
-1. **Services start with no intentions**
-   All traffic is denied by default.
-
-2. **Intentions are created**
-   - planner-agent → executor-agent
-   - executor-agent → ollama
-
-3. **Traffic starts flowing immediately**
-   No restarts. No config reloads.
-
-4. **An intention is removed**
-   Traffic stops instantly.
-
-This makes failure modes obvious and safe. Authorization is explicit. Nothing works by accident.
+Failure modes are obvious. Authorization is explicit. Nothing works by accident.
 
 ---
 
@@ -134,13 +103,13 @@ This makes failure modes obvious and safe. Authorization is explicit. Nothing wo
 
 ## Notes
 
-**First run**: The `tinyllama` model gets pulled on first start. It's about 600MB. This happens once and gets cached in a Docker volume.
+**First run**: Downloads `tinyllama` (600MB). Cached in a Docker volume after that.
 
-**Performance**: The model runs on CPU. Answers to short questions come back in a few seconds. Longer prompts take longer. This is intentional — the demo doesn't require a GPU.
+**Performance**: CPU inference. Short questions take a few seconds. Longer prompts take longer. No GPU needed.
 
-**Bootstrap timing**: Services start with health checks. The bootstrap container waits for Vault and Consul to be ready before configuring PKI. If you see errors on first boot, wait 10 seconds and check `docker compose logs bootstrap`. It usually means something hadn't started yet.
+**Bootstrap timing**: Services use health checks. Bootstrap waits for Vault and Consul before configuring PKI. If you see errors at first boot, wait 10 seconds and check `docker compose logs bootstrap`.
 
-**Intentions**: You can create and delete intentions manually with `task allow` and `task deny`. Changes take effect immediately — no restarts needed.
+**Intentions**: Use `task allow` and `task deny` to manage intentions manually. Changes apply instantly.
 
 ---
 
@@ -156,12 +125,8 @@ This makes failure modes obvious and safe. Authorization is explicit. Nothing wo
 
 ## Going deeper
 
-For a detailed explanation of how Vault, Consul, SPIFFE identities, sidecars, and intentions fit together, see:
+See `docs/architecture.md` for a detailed breakdown of Vault, Consul, SPIFFE identities, sidecars, and intentions.
 
-```
-docs/architecture.md
-```
+This demo uses Docker Compose. Runs anywhere Docker runs.
 
-This demo uses Docker Compose so it runs anywhere Docker runs.
-
-The `nomad/` and `scripts/` directories contain a more realistic setup using Nomad, CNI, and Linux networking. The architecture is the same. The setup is heavier. Use it if you want to explore production-style sidecar injection and networking.
+The `nomad/` and `scripts/` directories have a heavier setup with Nomad, CNI, and Linux networking. Same architecture, more realistic sidecar injection. Use that if you want production-style behavior.
