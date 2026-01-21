@@ -98,57 +98,7 @@ Inference is treated as a protected capability. LLM calls can be expensive, may 
 
 ## Request flow
 
-```
-User
-  │
-  │  POST /ask {"question": "..."}
-  │
-  ▼
-┌──────────────────────┐
-│    planner-agent     │  ← SPIFFE ID: .../svc/planner-agent
-│       (Flask)        │
-└──────────┬───────────┘
-           │
-           │  HTTP to localhost:9001
-           ▼
-┌──────────────────────┐
-│   planner sidecar    │  ← Envoy
-└──────────┬───────────┘
-           │
-           │  mTLS ─────────────────────────┐
-           │                                │
-           ▼                                │ intention check:
-┌──────────────────────┐                    │ planner-agent → executor-agent
-│   executor sidecar   │  ← Envoy           │
-└──────────┬───────────┘                    │
-           │                                │
-           │  HTTP to localhost:8081  ◄─────┘
-           ▼
-┌──────────────────────┐
-│   executor-agent     │  ← SPIFFE ID: .../svc/executor-agent
-│       (Flask)        │
-└──────────┬───────────┘
-           │
-           │  HTTP to localhost:9002
-           ▼
-┌──────────────────────┐
-│   executor sidecar   │  ← Envoy
-└──────────┬───────────┘
-           │
-           │  mTLS ─────────────────────────┐
-           │                                │
-           ▼                                │ intention check:
-┌──────────────────────┐                    │ executor-agent → ollama
-│    ollama sidecar    │  ← Envoy           │
-└──────────┬───────────┘                    │
-           │                                │
-           │  HTTP to localhost:11434 ◄─────┘
-           ▼
-┌──────────────────────┐
-│       ollama         │  ← SPIFFE ID: .../svc/ollama
-│    (LLM runtime)     │
-└──────────────────────┘
-```
+![Request Flow](../img/request_flow.png)
 
 The applications make plain HTTP requests to localhost. The sidecars intercept traffic, establish mutual TLS with the destination sidecar, and enforce authorization. The applications are unaware of certificates, identities, or intentions.
 
