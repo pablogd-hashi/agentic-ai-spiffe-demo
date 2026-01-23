@@ -18,6 +18,9 @@ tasks:
       - echo "Warming up model (first request is slow)..."
       - 'docker exec ollama ollama run {{.OLLAMA_MODEL}} "hi" --nowordwrap >/dev/null 2>&1 || true'
       - echo ""
+      - echo "Creating intentions (allowing traffic)..."
+      - task: allow
+      - echo ""
       - echo "Ready."
       - 'echo "  Vault:  http://localhost:8200 (token: root)"'
       - 'echo "  Consul: http://localhost:8500"'
@@ -47,7 +50,6 @@ tasks:
       - task: _demo_identity
       - task: _demo_deny
       - task: _demo_allow
-      - task: _demo_break
       - task: _demo_end
 
   chat:
@@ -137,24 +139,19 @@ tasks:
         echo "----------------"
         curl -s http://localhost:8500/v1/agent/services | jq -r 'to_entries[] | select(.key | test("planner|executor|ollama")) | select(.key | contains("sidecar") | not) | "  \(.key): \(.value.Address):\(.value.Port)"'
         echo ""
-        read -p "Press Enter to see SPIFFE IDs from certificates..."
+        read -p "Press Enter to see SPIFFE ID in certificate..."
         echo ""
-        echo "SPIFFE IDs (extracted from Envoy sidecar certs):"
-        echo "------------------------------------------------"
+        echo "Certificate for executor-agent (from Consul leaf cert API):"
+        echo "------------------------------------------------------------"
+        curl -s http://localhost:8500/v1/agent/connect/ca/leaf/executor-agent | jq -r '.CertPEM' | openssl x509 -text -noout 2>/dev/null | grep -A1 "Subject Alternative Name"
         echo ""
-        echo "planner-agent:"
-        docker exec planner-sidecar cat /dev/null 2>/dev/null && \
-          curl -s http://localhost:8500/v1/agent/connect/ca/leaf/planner-agent 2>/dev/null | jq -r '.Service' || \
-          echo "  spiffe://dc1.consul/ns/default/dc/dc1/svc/planner-agent"
+        echo "The SPIFFE ID is embedded as a URI in the SAN field."
+        echo "Envoy extracts this during mTLS handshake to verify identity."
         echo ""
-        echo "executor-agent:"
+        echo "All services follow the same pattern:"
+        echo "  spiffe://dc1.consul/ns/default/dc/dc1/svc/planner-agent"
         echo "  spiffe://dc1.consul/ns/default/dc/dc1/svc/executor-agent"
-        echo ""
-        echo "ollama:"
         echo "  spiffe://dc1.consul/ns/default/dc/dc1/svc/ollama"
-        echo ""
-        echo "These IDs are in the certificate SAN (Subject Alternative Name)."
-        echo "Envoy verifies them during mTLS handshake. Apps see plain HTTP."
         echo ""
         read -p "Press Enter to continue..."
 
@@ -171,6 +168,9 @@ tasks:
         echo ""
         read -p "Press Enter to delete intentions and test..."
       - task: deny
+      - |
+        echo ""
+        echo "Waiting for intentions to propagate..."
       - sleep 5
       - |
         echo ""
@@ -194,32 +194,13 @@ tasks:
         echo ""
         read -p "Press Enter to create intentions..."
       - task: allow
+      - |
+        echo ""
+        echo "Waiting for intentions to propagate..."
       - sleep 5
       - |
         echo ""
         echo "Testing planner -> executor -> ollama..."
-        echo ""
-      - task: _test
-      - |
-        echo ""
-        read -p "Press Enter to continue..."
-
-  _demo_break:
-    cmds:
-      - |
-        echo ""
-        echo "Step 5: Granular Control"
-        echo "------------------------"
-        echo ""
-        echo "Remove just planner -> executor intention."
-        echo "executor -> ollama still exists, but planner can't reach executor."
-        echo ""
-        read -p "Press Enter to remove intention..."
-      - docker exec consul consul intention delete planner-agent executor-agent
-      - sleep 5
-      - |
-        echo ""
-        echo "Testing (should fail)..."
         echo ""
       - task: _test
       - |

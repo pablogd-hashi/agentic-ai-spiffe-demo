@@ -160,9 +160,19 @@ services:
             }
           }'
 
+        echo "=== Creating default deny intention ==="
+        curl -sf -X POST http://consul:8500/v1/connect/intentions \
+          -H "Content-Type: application/json" \
+          -d '{
+            "SourceName": "*",
+            "DestinationName": "*",
+            "Action": "deny"
+          }' || echo "Default deny intention may already exist"
+
         echo ""
         echo "=== Bootstrap Complete ==="
         echo "Vault PKI and Consul CA configured"
+        echo "Default deny intention created (all traffic blocked until explicitly allowed)"
         sleep 3
     networks:
       mesh:

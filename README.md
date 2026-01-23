@@ -9,6 +9,26 @@ User → planner-agent → executor-agent → ollama
             └───── mTLS ─────┴───── mTLS ─────┘
 ```
 
+## What You're Deploying
+
+**[Vault](https://www.vaultproject.io/)** — Secrets management and PKI. Vault runs a two-tier certificate authority (root CA + intermediate CA) that issues short-lived X.509 certificates. Workloads never touch Vault directly—Consul handles certificate requests on their behalf.
+
+**[Consul](https://www.consul.io/)** — Service mesh and service discovery. Consul requests certificates from Vault, distributes them to Envoy sidecars, and enforces authorization through intentions. Intentions are identity-based rules that allow or deny service-to-service communication.
+
+**[SPIFFE](https://spiffe.io/)** — A standard for service identity. Each service gets a SPIFFE ID embedded in its X.509 certificate as a URI Subject Alternative Name (SAN):
+
+```
+X509v3 Subject Alternative Name: critical
+    URI:spiffe://dc1.consul/ns/default/dc/dc1/svc/executor-agent
+```
+
+Sidecars verify these identities during mTLS handshake. Applications just make plain HTTP calls to localhost.
+
+**Agents** — Three services demonstrating identity boundaries:
+- `planner-agent` — receives user requests, forwards to executor
+- `executor-agent` — calls the LLM
+- `ollama` — local inference (tinyllama)
+
 For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 
 ## Prerequisites
@@ -17,8 +37,6 @@ For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 - [Task](https://taskfile.dev)
 
 ## Step 1: Start the Stack
-
-Start Vault, Consul, the agents, and their sidecars:
 
 ```bash
 task up
@@ -31,8 +49,6 @@ This will:
 - Warm the model with a test request
 
 ## Step 2: Run the Demo Walkthrough
-
-Run the guided demo to see SPIFFE and intentions in action:
 
 ```bash
 task demo
@@ -47,8 +63,6 @@ The walkthrough covers:
 Open Consul UI at http://localhost:8500 while running to watch services register and intentions change.
 
 ## Step 3: Chat with the Agents
-
-Once intentions are configured, start an interactive chat:
 
 ```bash
 task chat
@@ -76,7 +90,16 @@ Requests flow through `planner → executor → ollama` with mTLS at each hop.
 | Consul | http://localhost:8500 | |
 | Planner API | http://localhost:8080 | |
 
+## Running with Nomad
+
+The default setup uses Docker Compose for simplicity. For a production-style deployment with proper sidecar injection and CNI networking, use the Nomad setup.
+
+Nomad requires Linux. On macOS, use Multipass to run a Linux VM.
+
+See [nomad/README.md](nomad/README.md) for instructions.
+
 ## Notes
 
 - **Performance**: Model runs on CPU. Keep prompts short.
-- **Nomad**: The `nomad/` directory contains a production-style setup with proper sidecar injection (requires Linux).
+- **Certificates**: Short-lived and auto-rotated by Consul. No manual renewal needed.
+- **Default deny**: With no intentions, all traffic is blocked. Explicit allow required.
