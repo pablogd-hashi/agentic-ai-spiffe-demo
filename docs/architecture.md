@@ -104,12 +104,20 @@ The applications make plain HTTP requests to localhost. The sidecars intercept t
 
 ---
 
-## Docker Compose vs Nomad
+## Docker Compose vs Podman vs Nomad
 
-This demo uses Docker Compose to keep the setup simple and portable.
+This demo uses Docker Compose to keep the setup simple and portable. The same `docker-compose.yml` also works with Podman.
+
+### Docker Compose and Podman
+
+Both runtimes read the same `docker-compose.yml`. The `podman:*` tasks in the Taskfile wrap `podman compose` and `podman exec` as drop-in replacements. The `network_mode: "service:X"` used by the Consul sidecars is handled by `podman compose` via Podman pods.
+
+Podman 4.x ships with `podman compose` built in. The standalone `podman-compose` package also works and can be selected with `task podman:up COMPOSE=podman-compose`.
+
+### Nomad
 
 The `nomad/` directory contains job specifications for running the same architecture with Nomad. Nomad provides native Consul Connect integration, proper sidecar injection, and CNI-based transparent proxying, which requires Linux.
 
 The `scripts/` directory includes automation for running the Nomad setup inside a Linux VM using Multipass.
 
-The architecture is the same in both cases. Docker Compose is easier to run locally. Nomad is closer to production.
+The architecture is the same in all three cases. Docker Compose and Podman are easiest to run locally. Nomad is closer to production.

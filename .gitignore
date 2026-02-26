@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Vault
+*.crt
+*.csr
+*.pem
+root_ca.crt
+pki_intermediate.csr
+intermediate.cert.pem
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# Nomad
+.nomad/
+
+# Consul
+.consul/
+
+# Temporary files
+tmp/
+temp/

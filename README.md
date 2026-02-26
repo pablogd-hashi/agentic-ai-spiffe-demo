@@ -33,7 +33,7 @@ For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/)
+- [Docker](https://docs.docker.com/get-docker/) **or** [Podman](https://podman.io/get-started) (4.x+)
 - [Task](https://taskfile.dev)
 
 ## Step 1: Start the Stack
@@ -72,6 +72,8 @@ Requests flow through `planner → executor → ollama` with mTLS at each hop.
 
 ## Available Commands
 
+### Docker
+
 | Command | Description |
 |---------|-------------|
 | `task up` | Start all services |
@@ -81,6 +83,27 @@ Requests flow through `planner → executor → ollama` with mTLS at each hop.
 | `task allow` | Create intentions (allow traffic) |
 | `task deny` | Delete intentions (block traffic) |
 | `task logs` | Tail all container logs |
+
+### Podman
+
+Same workflow, using `podman compose` and `podman exec` under the hood:
+
+| Command | Description |
+|---------|-------------|
+| `task podman:up` | Start all services |
+| `task podman:down` | Stop all services |
+| `task podman:clean` | Stop and remove volumes |
+| `task podman:allow` | Create intentions (allow traffic) |
+| `task podman:deny` | Delete intentions (block traffic) |
+| `task podman:logs` | Tail all container logs |
+
+Both runtimes read the same `docker-compose.yml`. If you have the standalone `podman-compose` instead of the built-in `podman compose`, override the compose command:
+
+```bash
+task podman:up COMPOSE=podman-compose
+```
+
+The `task demo` and `task chat` commands work with either runtime since they only interact with service endpoints over localhost.
 
 ## Service URLs
 

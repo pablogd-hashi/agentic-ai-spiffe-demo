@@ -77,6 +77,76 @@ tasks:
     cmds:
       - docker compose logs -f
 
+  # === Podman tasks (mirrors docker tasks, uses podman compose + podman exec) ===
+  # Requires: podman compose (Podman 4.x+) or podman-compose (standalone)
+  # network_mode: "service:X" is handled via pods by podman compose
+
+  podman:up:
+    desc: Start all services with Podman
+    vars:
+      COMPOSE: '{{.COMPOSE | default "podman compose"}}'
+    cmds:
+      - "{{.COMPOSE}} up -d --build"
+      - echo ""
+      - echo "Waiting for bootstrap..."
+      - "{{.COMPOSE}} logs -f bootstrap 2>/dev/null || true"
+      - echo ""
+      - echo "Pulling model..."
+      - podman exec ollama ollama pull {{.OLLAMA_MODEL}}
+      - echo ""
+      - echo "Warming up model (first request is slow)..."
+      - 'podman exec ollama ollama run {{.OLLAMA_MODEL}} "hi" --nowordwrap >/dev/null 2>&1 || true'
+      - echo ""
+      - echo "Creating intentions (allowing traffic)..."
+      - task: podman:allow
+      - echo ""
+      - echo "Ready."
+      - 'echo "  Vault:  http://localhost:8200 (token: root)"'
+      - 'echo "  Consul: http://localhost:8500"'
+      - echo ""
+      - 'echo "Run: task demo"'
+      - echo ""
+      - 'echo "Sample questions (short = fast on CPU):"'
+      - 'echo "  What is 2+2?"'
+      - 'echo "  What is SPIFFE?"'
+      - 'echo "  Define mTLS."'
+
+  podman:down:
+    desc: Stop all services (Podman)
+    vars:
+      COMPOSE: '{{.COMPOSE | default "podman compose"}}'
+    cmds:
+      - "{{.COMPOSE}} down"
+
+  podman:clean:
+    desc: Stop services and remove volumes (Podman)
+    vars:
+      COMPOSE: '{{.COMPOSE | default "podman compose"}}'
+    cmds:
+      - "{{.COMPOSE}} down -v"
+
+  podman:allow:
+    desc: Create intentions (allow traffic) - Podman
+    cmds:
+      - podman exec consul consul intention create planner-agent executor-agent 2>/dev/null || podman exec consul consul intention create -replace planner-agent executor-agent
+      - podman exec consul consul intention create executor-agent ollama 2>/dev/null || podman exec consul consul intention create -replace executor-agent ollama
+      - echo "Intentions created"
+      - podman exec consul consul intention list
+
+  podman:deny:
+    desc: Delete intentions (block traffic) - Podman
+    cmds:
+      - podman exec consul consul intention delete planner-agent executor-agent 2>/dev/null || true
+      - podman exec consul consul intention delete executor-agent ollama 2>/dev/null || true
+      - echo "Intentions deleted"
+
+  podman:logs:
+    desc: Follow all logs (Podman)
+    vars:
+      COMPOSE: '{{.COMPOSE | default "podman compose"}}'
+    cmds:
+      - "{{.COMPOSE}} logs -f"
+
   # === Internal tasks (no desc = hidden from task --list) ===
 
   _demo_intro:
